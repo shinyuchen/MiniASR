@@ -7,6 +7,10 @@ data:
     mode: character
     vocab: data/libri_train_1h/vocab_char.txt
 
+fs_step: 500
+ss_step: 10000
+ts_step: 20000
+
 model:
   name: ctc_asr
   extractor:
@@ -46,8 +50,8 @@ checkpoint_callbacks:
 
 trainer:
   max_epochs: 500
-  max_steps: 100000
-  check_val_every_n_epoch: 5
+  max_steps: 80000
+  check_val_every_n_epoch: 1
   gpus: 1
   precision: 32
   logger: true

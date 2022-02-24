@@ -37,12 +37,12 @@ class BaseASR(pl.LightningModule):
 
     def __init__(self, tokenizer, args):
         super().__init__()
-
+        # self.automatic_optimization = False
         # Param setting
         self.args = args
         self.tokenizer = tokenizer
         self.vocab_size = tokenizer.vocab_size
-
+        self.gamma = 10 ** (-2 / (self.args.ss_step - self.args.fs_step))
         # Load feature extractor (from s3prl)
         extractor = torch.hub.load(
             's3prl/s3prl', args.model.extractor.name, verbose=False)
@@ -74,6 +74,33 @@ class BaseASR(pl.LightningModule):
         ''' Sets optimizer. '''
         return getattr(torch.optim, self.args.model.optim.algo)(
             self.parameters(), **self.args.model.optim.kwargs)
+    def optimizer_step(
+        self,
+        epoch,
+        batch_idx,
+        optimizer,
+        optimizer_idx,
+        optimizer_closure,
+        on_tpu=False,
+        using_native_amp=False,
+        using_lbfgs=False,
+    ):
+        # update generator every step
+        optimizer.step(closure=optimizer_closure)
+
+    # manually warm up lr without a scheduler
+        if (self.trainer.global_step <= self.args.fs_step):
+          for param_group in optimizer.param_groups:
+            param_group['lr'] = 1e-3 * self.trainer.global_step / self.args.fs_step
+        elif (self.trainer.global_step <= self.ss_step):
+          for param_group in optimizer.param_groups:
+            param_group['lr'] = 1e-3 
+        elif (self.trainer.global_step <= self.ts_step):
+          for param_group in optimizer.param_groups:
+            param_group['lr'] = 1e-3 * (self.gamma ** (self.trainer.global_step - self.args.fs_step))
+        else:
+          for param_group in optimizer.param_groups:
+            param_group['lr'] = 1e-5
 
     def cal_feat_len(self, x_len: torch.Tensor):
         ''' Calculates feature lengths. '''
@@ -124,8 +151,24 @@ class BaseASR(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         ''' Processes in a single training loop. '''
-
+        # print(self.optimizers())
         # Get inputs from batch
+        # opt = self.optimizers()
+        # if (batch_idx <= self.args.fs_step):
+        #   for param_group in opt.param_groups:
+        #     param_group['lr'] = 1e-3 * batch_idx / self.args.fs_step
+        # elif (batch_idx <= self.ss_step):
+        #   for param_group in opt.param_groups:
+        #     param_group['lr'] = 1e-3 
+        # elif (batch_idx <= self.ts_step):
+        #   for param_group in opt.param_groups:
+        #     param_group['lr'] = 1e-3 * (self.gamma ** (batch_idx - self.args.fs_step))
+        # else:
+        #   for param_group in opt.param_groups:
+        #     param_group['lr'] = 1e-5
+            
+        # opt.zero_grad()
+
         wave, text = batch['wave'], batch['text']
         wave_len, text_len = batch['wave_len'], batch['text_len']
 
@@ -133,8 +176,10 @@ class BaseASR(pl.LightningModule):
         logits, enc_len, feat, feat_len = self(wave, wave_len)
 
         # Compute loss
-        loss = self.cal_loss(logits, enc_len, feat, feat_len, text, text_len)
+        loss = self.cal_loss(logits, enc_len, feat, feat_len, text, text_len) 
 
+        # self.manual_backward(loss)
+        # opt.step()
         # Log information
         self.log('train_loss', loss)
 

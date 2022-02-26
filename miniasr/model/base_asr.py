@@ -27,6 +27,10 @@ def extracted_length(length: int, stride: int = 10):
         return (length // 16 - 30) // 20
     return (length // 16 - 15) // 10
 
+def add_Gaussian_noise(m):
+    with torch.no_grad():
+        if hasattr(m, 'weight'):
+            m.weight.add_(torch.normal(mean = 0, std = 0.075))
 
 class BaseASR(pl.LightningModule):
     '''
@@ -151,23 +155,6 @@ class BaseASR(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         ''' Processes in a single training loop. '''
-        # print(self.optimizers())
-        # Get inputs from batch
-        # opt = self.optimizers()
-        # if (batch_idx <= self.args.fs_step):
-        #   for param_group in opt.param_groups:
-        #     param_group['lr'] = 1e-3 * batch_idx / self.args.fs_step
-        # elif (batch_idx <= self.ss_step):
-        #   for param_group in opt.param_groups:
-        #     param_group['lr'] = 1e-3 
-        # elif (batch_idx <= self.ts_step):
-        #   for param_group in opt.param_groups:
-        #     param_group['lr'] = 1e-3 * (self.gamma ** (batch_idx - self.args.fs_step))
-        # else:
-        #   for param_group in opt.param_groups:
-        #     param_group['lr'] = 1e-5
-            
-        # opt.zero_grad()
 
         wave, text = batch['wave'], batch['text']
         wave_len, text_len = batch['wave_len'], batch['text_len']
@@ -181,8 +168,10 @@ class BaseASR(pl.LightningModule):
         # self.manual_backward(loss)
         # opt.step()
         # Log information
+        if(self.trainer.global_step >= self.args.fs_step):
+          self.apply(add_Gaussian_noise)
+        
         self.log('train_loss', loss)
-
         return loss
 
     def decode(self, logits, enc_len, decode_type=None):

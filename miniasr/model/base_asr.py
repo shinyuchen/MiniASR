@@ -20,6 +20,7 @@ def get_model_stride(name):
     ''' Returns the stride of a model (in ms) '''
     return 20 if any(m in name.split('_') for m in ['hubert', 'wav2vec2']) else 10
 
+# def label_smoothing()
 
 def extracted_length(length: int, stride: int = 10):
     ''' Calculates extracted feature's length. '''
@@ -30,7 +31,8 @@ def extracted_length(length: int, stride: int = 10):
 def add_Gaussian_noise(m):
     with torch.no_grad():
         if hasattr(m, 'weight'):
-            m.weight.add_(torch.normal(mean = 0, std = 0.075))
+            noise = torch.normal(mean = 0, std = 0.075, size = m.weight.size()).cuda()
+            m.weight.add_(noise)
 
 class BaseASR(pl.LightningModule):
     '''
@@ -155,8 +157,9 @@ class BaseASR(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         ''' Processes in a single training loop. '''
-
+        
         wave, text = batch['wave'], batch['text']
+        # if(self.trainer.global_step <= self.args.ss_step):
         wave_len, text_len = batch['wave_len'], batch['text_len']
 
         # Compute logits

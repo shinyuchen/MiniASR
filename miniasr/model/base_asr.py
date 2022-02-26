@@ -98,10 +98,10 @@ class BaseASR(pl.LightningModule):
         if (self.trainer.global_step <= self.args.fs_step):
           for param_group in optimizer.param_groups:
             param_group['lr'] = 1e-3 * self.trainer.global_step / self.args.fs_step
-        elif (self.trainer.global_step <= self.ss_step):
+        elif (self.trainer.global_step <= self.args.ss_step):
           for param_group in optimizer.param_groups:
             param_group['lr'] = 1e-3 
-        elif (self.trainer.global_step <= self.ts_step):
+        elif (self.trainer.global_step <= self.args.ts_step):
           for param_group in optimizer.param_groups:
             param_group['lr'] = 1e-3 * (self.gamma ** (self.trainer.global_step - self.args.fs_step))
         else:
@@ -171,8 +171,7 @@ class BaseASR(pl.LightningModule):
         # self.manual_backward(loss)
         # opt.step()
         # Log information
-        if(self.trainer.global_step >= self.args.fs_step):
-          self.apply(add_Gaussian_noise)
+
         
         self.log('train_loss', loss)
         return loss

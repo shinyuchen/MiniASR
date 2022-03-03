@@ -52,6 +52,9 @@ class pBLSTMLayer(nn.Module):
         batch_size = input_x.size(0)
         timestep = input_x.size(1)
         feature_dim = input_x.size(2)
+        if(timestep % 2 != 0):
+          input_x = torch.cat((input_x, torch.zeros((batch_size, 1, feature_dim)).cuda()), dim = 1)
+          timestep += 1
         # Reduce time resolution
         input_x = input_x.contiguous().view(batch_size,int(timestep/2),feature_dim*2)
         # Bidirectional RNN
@@ -61,7 +64,7 @@ class pBLSTMLayer(nn.Module):
 # Listener is a pBLSTM stacking 3 layers to reduce time resolution 8 times
 # Input shape should be [# of sample, timestep, features]
 class Listener(nn.Module):
-    def __init__(self, input_feature_dim=240, listener_hidden_dim=512, listener_layer=3, rnn_unit='LSTM', use_gpu=True, dropout_rate=0.0, **kwargs):
+    def __init__(self, input_feature_dim=240, listener_hidden_dim=256, listener_layer=2, rnn_unit='LSTM', use_gpu=True, dropout_rate=0.0, **kwargs):
         super(Listener, self).__init__()
         # Listener RNN layer
         self.listener_layer = listener_layer
@@ -87,7 +90,7 @@ class Listener(nn.Module):
 # Speller specified in the paper
 class Speller(nn.Module):
     def __init__(self, output_class_dim=31,  speller_hidden_dim=512, rnn_unit="LSTM", speller_rnn_layer=1, use_gpu=True, max_label_len=1700,
-                 use_mlp_in_attention=True, mlp_dim_in_attention=128, mlp_activate_in_attention='relu', listener_hidden_dim=512,
+                 use_mlp_in_attention=True, mlp_dim_in_attention=128, mlp_activate_in_attention='relu', listener_hidden_dim=1024,
                  multi_head=4, decode_mode=1, **kwargs):
         super(Speller, self).__init__()
         self.rnn_unit = getattr(nn,rnn_unit.upper())
@@ -125,7 +128,7 @@ class Speller(nn.Module):
         if self.use_gpu:
             output_word = output_word.cuda()
         rnn_input = torch.cat([output_word,listener_feature[:,0:1,:]],dim=-1)
-
+        print(rnn_input.size())
         hidden_state = None
         raw_pred_seq = []
         output_seq = []
@@ -440,7 +443,10 @@ class ASR(BaseASR):
         if self.enable_beam_decode and decode_type != 'greedy':
             return self.beam_decode(logits, enc_len)
         return self.greedy_decode(logits, enc_len)
-
+    def validation_step(self, batch, batch_idx):
+      pass
+    def validation_epoch_end(self, outputs):
+      pass
     def greedy_decode(self, logits, enc_len):
         ''' CTC greedy decoding. '''
         hyps = torch.argmax(logits, dim=2).cpu().tolist()  # Batch x Time

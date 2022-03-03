@@ -12,7 +12,7 @@ ss_step: 10000
 ts_step: 20000
 
 model:
-  name: ctc_asr
+  name: las_asr
   extractor:
     name: fbank
     train: false
@@ -36,10 +36,10 @@ model:
     time_warp_w: 80
 
 hparam:
-  train_batch_size: 48
-  val_batch_size: 48
+  train_batch_size: 1
+  val_batch_size: 5
   accum_grad: 1
-  grad_clip: 5
+  grad_clip: 5000
   njobs: 4
   pin_memory: true
 
@@ -51,7 +51,7 @@ checkpoint_callbacks:
 trainer:
   max_epochs: 500
   max_steps: 80000
-  check_val_every_n_epoch: 1
+  check_val_every_n_epoch: 5
   gpus: 1
   precision: 32
   logger: true

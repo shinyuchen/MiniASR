@@ -30,10 +30,23 @@ from torch.autograd import Variable
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
-
+import editdistance as ed
 import numpy as np
 
-
+def LetterErrorRate(pred_y,true_y):
+    ed_accumalate = []
+    for p,t in zip(pred_y,true_y):
+        compressed_t = [w for w in t if (w!=1 and w!=0)]
+        
+        compressed_p = []
+        for p_w in p:
+            if p_w == 0:
+                continue
+            if p_w == 1:
+                break
+            compressed_p.append(p_w)
+        ed_accumalate.append(ed.eval(compressed_p,compressed_t)/len(compressed_t))
+    return ed_accumalate
 
 # BLSTM layer for pBLSTM
 # Step 1. Reduce time resolution to half
@@ -64,7 +77,7 @@ class pBLSTMLayer(nn.Module):
 # Listener is a pBLSTM stacking 3 layers to reduce time resolution 8 times
 # Input shape should be [# of sample, timestep, features]
 class Listener(nn.Module):
-    def __init__(self, input_feature_dim=240, listener_hidden_dim=256, listener_layer=2, rnn_unit='LSTM', use_gpu=True, dropout_rate=0.0, **kwargs):
+    def __init__(self, input_feature_dim=240, listener_hidden_dim=256, listener_layer=3, rnn_unit='LSTM', use_gpu=True, dropout_rate=0.0, **kwargs):
         super(Listener, self).__init__()
         # Listener RNN layer
         self.listener_layer = listener_layer
@@ -83,14 +96,14 @@ class Listener(nn.Module):
         output,_  = self.pLSTM_layer0(input_x)
         for i in range(1,self.listener_layer):
             output, _ = getattr(self,'pLSTM_layer'+str(i))(output)
-        
+        # print(f'second output size : {_}')
         return output
 
 
 # Speller specified in the paper
 class Speller(nn.Module):
     def __init__(self, output_class_dim=31,  speller_hidden_dim=512, rnn_unit="LSTM", speller_rnn_layer=1, use_gpu=True, max_label_len=1700,
-                 use_mlp_in_attention=True, mlp_dim_in_attention=128, mlp_activate_in_attention='relu', listener_hidden_dim=1024,
+                 use_mlp_in_attention=True, mlp_dim_in_attention=128, mlp_activate_in_attention='relu', listener_hidden_dim=256,
                  multi_head=4, decode_mode=1, **kwargs):
         super(Speller, self).__init__()
         self.rnn_unit = getattr(nn,rnn_unit.upper())
@@ -111,6 +124,7 @@ class Speller(nn.Module):
     # Stepwise operation of each sequence
     def forward_step(self,input_word, last_hidden_state,listener_feature):
         rnn_output, hidden_state = self.rnn_layer(input_word,last_hidden_state)
+        # print(f'rnn output size : {rnn_output.size()} \n listener feature size : {listener_feature.size()}')
         attention_score, context = self.attention(rnn_output,listener_feature)
         concat_feature = torch.cat([rnn_output.squeeze(dim=1),context],dim=-1)
         raw_pred = self.softmax(self.character_distribution(concat_feature))
@@ -127,8 +141,9 @@ class Speller(nn.Module):
         output_word = CreateOnehotVariable(self.float_type(np.zeros((batch_size,1))),self.label_dim)
         if self.use_gpu:
             output_word = output_word.cuda()
+        # print(f'output word size : {output_word.size()}')
         rnn_input = torch.cat([output_word,listener_feature[:,0:1,:]],dim=-1)
-        print(rnn_input.size())
+        # print(f'rnn input size : {rnn_input.size()}')
         hidden_state = None
         raw_pred_seq = []
         output_seq = []
@@ -145,7 +160,7 @@ class Speller(nn.Module):
             attention_record.append(attention_score)
             # Teacher force - use ground truth as next step's input
             if teacher_force:
-                output_word = ground_truth[:,step:step+1,:].type(self.float_type)
+                output_word = CreateOnehotVariable(ground_truth[:,step:step+1], self.label_dim).type(self.float_type)
             else:
                 # Case 0. raw output as input
                 if self.decode_mode == 0:
@@ -264,13 +279,16 @@ def batch_iterator(batch_data, batch_label, listener, speller, optimizer, tf_rat
 
     batch_data = Variable(batch_data).type(torch.FloatTensor)
     batch_label = Variable(batch_label, requires_grad=False)
+    # print(f'batch label size : {batch_label.size()}')
     criterion = nn.NLLLoss(ignore_index=0)
     if use_gpu:
         batch_data = batch_data.cuda()
         batch_label = batch_label.cuda()
         criterion = criterion.cuda()
     # Forwarding
+    # print(f'batch data size : {batch_data.size()}')
     listner_feature = listener(batch_data)
+    # print(f'listener output size : {listner_feature.size()}')
     if is_training:
         raw_pred_seq, _ = speller(listner_feature,ground_truth=batch_label,teacher_force_rate=tf_rate)
     else:
@@ -288,7 +306,7 @@ def batch_iterator(batch_data, batch_label, listener, speller, optimizer, tf_rat
         #                             true_y.cpu().data.numpy(),data) #.reshape(current_batch_size,max_label_len), data)
 
     else:
-        true_y = batch_label[:,:max_label_len,:].contiguous()
+        true_y = CreateOnehotVariable(batch_label[:,:max_label_len], 31).contiguous()
         true_y = true_y.type(torch.cuda.FloatTensor) if use_gpu else true_y.type(torch.FloatTensor)
         loss = label_smoothing_loss(pred_y,true_y,label_smoothing=label_smoothing)
         # batch_ler = LetterErrorRate(torch.max(pred_y,dim=2)[1].cpu().numpy(),#.reshape(current_batch_size,max_label_len),
@@ -298,11 +316,11 @@ def batch_iterator(batch_data, batch_label, listener, speller, optimizer, tf_rat
     #     loss.backward()
     #     optimizer.step()
 
-    batch_loss = loss.cpu().data.numpy()
-    
+    batch_loss = loss
+    print(f'listner_feature[0] : {listner_feature[0].size()} \n listner_feature[1] : {listner_feature[1].size()}')
 
 
-    return batch_loss #, batch_ler
+    return batch_loss, pred_y #, batch_ler
 '''
     File      [ ctc_asr.py ]
     Author    [ Heng-Jui Chang (NTUEE) ]
@@ -412,12 +430,12 @@ class ASR(BaseASR):
         feat, feat_len = self.extract_features(wave, wave_len)
 
         # Encode features
-        loss = batch_iterator(feat, text, self.Listen, self.AttendAndSpell, self.optimizers())
+        loss, pred = batch_iterator(feat, text, self.Listen, self.AttendAndSpell, self.optimizers())
 
         # Project hidden features to vocabularies
         
 
-        return loss
+        return loss, pred, feat_len
 
     def training_step(self, batch, batch_idx):
         ''' Processes in a single training loop. '''
@@ -427,7 +445,7 @@ class ASR(BaseASR):
         wave_len, text_len = batch['wave_len'], batch['text_len']
 
         # Compute logits
-        loss = self(wave, wave_len, text, text_len)
+        loss, _, _2= self(wave, wave_len, text, text_len)
 
         # Compute loss
         # loss = self.cal_loss(logits, enc_len, feat, feat_len, text, text_len)
@@ -444,14 +462,45 @@ class ASR(BaseASR):
             return self.beam_decode(logits, enc_len)
         return self.greedy_decode(logits, enc_len)
     def validation_step(self, batch, batch_idx):
-      pass
-    def validation_epoch_end(self, outputs):
-      pass
+        '''
+            Processes in a single validation loop.
+            Performs CTC decoding.
+        '''
+
+        # Get inputs from batch
+        wave, text = batch['wave'], batch['text']
+        wave_len, text_len = batch['wave_len'],  batch['text_len']
+
+        with torch.no_grad():
+            # Compute logits
+            loss, logits, feat_len = self(wave, wave_len, text, text_len)
+            enc_len = [np.floor(i.cpu()/8) for i in feat_len]
+            print(enc_len)
+            # Decode (hypotheses)
+            # hyps = []
+            # for p in torch.max(logits.permute(0,2,1),dim=2)[1].cpu().numpy():     
+            #   # print(f'p size:{p.size()}')         
+            #   for p_w in p:
+            #       if p_w == 0:
+            #           continue
+            #       if p_w == 1:
+            #           break
+            #       hyps.append(p_w)
+            #   hyps = [self.tokenizer.decode(hyps)]
+            hyps = self.decode(logits, enc_len)
+              # hyps.append(compressed_p)
+              # print(f'hyps : {hyps}')
+            # Recover reference text
+            refs = [self.tokenizer.decode(text[i].cpu().tolist())
+                    for i in range(len(text))]
+            print(f'refs: {refs}')
+        return list(zip(refs, hyps)), loss.cpu().item()
     def greedy_decode(self, logits, enc_len):
         ''' CTC greedy decoding. '''
-        hyps = torch.argmax(logits, dim=2).cpu().tolist()  # Batch x Time
-        return [self.tokenizer.decode(h[:enc_len[i]], ignore_repeat=True)
+        hyps = torch.argmax(logits, dim=2).cpu().tolist()  # Batch x Time 
+        result = [self.tokenizer.decode(h[:int(enc_len[i].item())], ignore_repeat=True)
                 for i, h in enumerate(hyps)]
+        return result
 
     def beam_decode(self, logits, enc_len):
         ''' Flashlight beam decoding. '''

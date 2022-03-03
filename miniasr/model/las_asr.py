@@ -1,15 +1,3 @@
-import torch
-if torch.cuda.is_available():
-    import torch.cuda as device
-else:
-    import torch as device
-from torch.autograd import Variable    
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.distributions.categorical import Categorical
-
-import numpy as np
-
 def CreateOnehotVariable( input_x, encoding_dim=63):
     if type(input_x) is Variable:
         input_x = input_x.data 
@@ -33,30 +21,86 @@ def TimeDistributed(input_module, input_x):
     reshaped_x = input_x.contiguous().view(-1, input_x.size(-1))
     output_x = input_module(reshaped_x)
     return output_x.view(batch_size,time_steps,-1)
+import torch
+if torch.cuda.is_available():
+    import torch.cuda as device
+else:
+    import torch as device
+from torch.autograd import Variable    
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.distributions.categorical import Categorical
 
+import numpy as np
+
+
+
+# BLSTM layer for pBLSTM
+# Step 1. Reduce time resolution to half
+# Step 2. Run through BLSTM
+# Note the input should have timestep%2 == 0
+class pBLSTMLayer(nn.Module):
+    def __init__(self,input_feature_dim,hidden_dim,rnn_unit='LSTM',dropout_rate=0.0):
+        super(pBLSTMLayer, self).__init__()
+        self.rnn_unit = getattr(nn,rnn_unit.upper())
+
+        # feature dimension will be doubled since time resolution reduction
+        self.BLSTM = self.rnn_unit(input_feature_dim*2,hidden_dim,1, bidirectional=True, 
+                                   dropout=dropout_rate,batch_first=True)
+    
+    def forward(self,input_x):
+        batch_size = input_x.size(0)
+        timestep = input_x.size(1)
+        feature_dim = input_x.size(2)
+        # Reduce time resolution
+        input_x = input_x.contiguous().view(batch_size,int(timestep/2),feature_dim*2)
+        # Bidirectional RNN
+        output,hidden = self.BLSTM(input_x)
+        return output,hidden
+
+# Listener is a pBLSTM stacking 3 layers to reduce time resolution 8 times
+# Input shape should be [# of sample, timestep, features]
+class Listener(nn.Module):
+    def __init__(self, input_feature_dim=240, listener_hidden_dim=512, listener_layer=3, rnn_unit='LSTM', use_gpu=True, dropout_rate=0.0, **kwargs):
+        super(Listener, self).__init__()
+        # Listener RNN layer
+        self.listener_layer = listener_layer
+        assert self.listener_layer>=1,'Listener should have at least 1 layer'
+        
+        self.pLSTM_layer0 = pBLSTMLayer(input_feature_dim,listener_hidden_dim, rnn_unit=rnn_unit, dropout_rate=dropout_rate)
+
+        for i in range(1,self.listener_layer):
+            setattr(self, 'pLSTM_layer'+str(i), pBLSTMLayer(listener_hidden_dim*2,listener_hidden_dim, rnn_unit=rnn_unit, dropout_rate=dropout_rate))
+
+        self.use_gpu = use_gpu
+        if self.use_gpu:
+            self = self.cuda()
+
+    def forward(self,input_x):
+        output,_  = self.pLSTM_layer0(input_x)
+        for i in range(1,self.listener_layer):
+            output, _ = getattr(self,'pLSTM_layer'+str(i))(output)
+        
+        return output
+
+
+# Speller specified in the paper
 class Speller(nn.Module):
-    def __init__(self, output_class_dim=40, speller_hidden_dim=512, rnn_unit="LSTM", speller_rnn_layer=1, use_gpu=True, max_label_len=77,
-                 use_mlp_in_attention=True, mlp_dim_in_attention=128, mlp_activate_in_attention='relu', listener_hidden_dim=256,
-                 multi_head=1, decode_mode=1, **kwargs):
+    def __init__(self, output_class_dim=31,  speller_hidden_dim=512, rnn_unit="LSTM", speller_rnn_layer=1, use_gpu=True, max_label_len=1700,
+                 use_mlp_in_attention=True, mlp_dim_in_attention=128, mlp_activate_in_attention='relu', listener_hidden_dim=512,
+                 multi_head=4, decode_mode=1, **kwargs):
         super(Speller, self).__init__()
         self.rnn_unit = getattr(nn,rnn_unit.upper())
-        # LSTM model
         self.max_label_len = max_label_len
-        # unknown
         self.decode_mode = decode_mode
-        # for different feedback features
         self.use_gpu = use_gpu
         self.float_type = torch.torch.cuda.FloatTensor if use_gpu else torch.FloatTensor
         self.label_dim = output_class_dim
-        # the number of output classes
         self.rnn_layer = self.rnn_unit(output_class_dim+speller_hidden_dim,speller_hidden_dim,num_layers=speller_rnn_layer,batch_first=True)
-        # class + hidden => hidden
         self.attention = Attention( mlp_preprocess_input=use_mlp_in_attention, preprocess_mlp_dim=mlp_dim_in_attention,
                                     activate=mlp_activate_in_attention, input_feature_dim=2*listener_hidden_dim,
                                     multi_head=multi_head)
-        # 2 * listener hidden dim => 2 * listener hidden dim
         self.character_distribution = nn.Linear(speller_hidden_dim*2,output_class_dim)
-        # 2 * speller hidden dim => class dim
         self.softmax = nn.LogSoftmax(dim=-1)
         if self.use_gpu:
             self = self.cuda()
@@ -78,7 +122,6 @@ class Speller(nn.Module):
         batch_size = listener_feature.size()[0]
 
         output_word = CreateOnehotVariable(self.float_type(np.zeros((batch_size,1))),self.label_dim)
-        # 
         if self.use_gpu:
             output_word = output_word.cuda()
         rnn_input = torch.cat([output_word,listener_feature[:,0:1,:]],dim=-1)
@@ -182,20 +225,11 @@ class Attention(nn.Module):
 
         return attention_score,context
 
-'''
-    File      [ LAS_asr.py ]
-    Author    [ Sin Yu Chen (NTUEE) ]
-    Synopsis  [ LAS ASR model. ]
-'''
-
-import logging
-import numpy as np
-import torch
-from torch import nn
 
 
-from miniasr.model.base_asr import BaseASR
-from miniasr.module import RNNEncoder
+
+
+
 
 
 def label_smoothing_loss(pred_y,true_y,label_smoothing=0.1):
@@ -212,11 +246,10 @@ def label_smoothing_loss(pred_y,true_y,label_smoothing=0.1):
 
     return loss
 
-
-def batch_iterator(batch_data, batch_label, listener, speller, optimizer, tf_rate=1, is_training=True, data='timit',**kwargs):
+def batch_iterator(batch_data, batch_label, listener, speller, optimizer, tf_rate=0.9, is_training=True, max_label_len=1700, **kwargs):
     bucketing = False
     use_gpu = True
-    output_class_dim = 40
+    output_class_dim = 31
     label_smoothing = 0.1
 
     # Load data
@@ -224,8 +257,8 @@ def batch_iterator(batch_data, batch_label, listener, speller, optimizer, tf_rat
         batch_data = batch_data.squeeze(dim=0)
         batch_label = batch_label.squeeze(dim=0)
     current_batch_size = len(batch_data)
-    max_label_len = min([batch_label.size()[1], 77])
-    # 77 = max_label_len
+    max_label_len = min([batch_label.size()[1], max_label_len])
+
     batch_data = Variable(batch_data).type(torch.FloatTensor)
     batch_label = Variable(batch_label, requires_grad=False)
     criterion = nn.NLLLoss(ignore_index=0)
@@ -234,7 +267,6 @@ def batch_iterator(batch_data, batch_label, listener, speller, optimizer, tf_rat
         batch_label = batch_label.cuda()
         criterion = criterion.cuda()
     # Forwarding
-    optimizer.zero_grad()
     listner_feature = listener(batch_data)
     if is_training:
         raw_pred_seq, _ = speller(listner_feature,ground_truth=batch_label,teacher_force_rate=tf_rate)
@@ -257,15 +289,31 @@ def batch_iterator(batch_data, batch_label, listener, speller, optimizer, tf_rat
         true_y = true_y.type(torch.cuda.FloatTensor) if use_gpu else true_y.type(torch.FloatTensor)
         loss = label_smoothing_loss(pred_y,true_y,label_smoothing=label_smoothing)
         # batch_ler = LetterErrorRate(torch.max(pred_y,dim=2)[1].cpu().numpy(),#.reshape(current_batch_size,max_label_len),
-                                    # torch.max(true_y,dim=2)[1].cpu().data.numpy(),data) #.reshape(current_batch_size,max_label_len), data)
+        #                             torch.max(true_y,dim=2)[1].cpu().data.numpy(),data) #.reshape(current_batch_size,max_label_len), data)
 
-    if is_training:
-        loss.backward()
-        optimizer.step()
+    # if is_training:
+    #     loss.backward()
+    #     optimizer.step()
 
     batch_loss = loss.cpu().data.numpy()
+    
 
-    return batch_loss
+
+    return batch_loss #, batch_ler
+'''
+    File      [ ctc_asr.py ]
+    Author    [ Heng-Jui Chang (NTUEE) ]
+    Synopsis  [ CTC ASR model. ]
+'''
+
+import logging
+import numpy as np
+import torch
+from torch import nn
+
+from miniasr.model.base_asr import BaseASR
+from miniasr.module import RNNEncoder
+
 
 class ASR(BaseASR):
     '''
@@ -276,17 +324,12 @@ class ASR(BaseASR):
         super().__init__(tokenizer, args)
 
         # Main model setup
-        if self.args.model.encoder.module in ['RNN', 'GRU', 'LSTM']:
-            self.Listen = RNNEncoder(self.in_dim, **args.model.encoder)
-        else:
-            raise NotImplementedError(
-                f'Unkown encoder module {self.args.model.encoder.module}')
+        self.Listen = Listener()
 
-        self.ANS = Speller()
-
+        self.AttendAndSpell = Speller()
 
         # Loss function (CTC loss)
-        self.las_loss = torch.nn.NLLLoss()
+        self.ctc_loss = torch.nn.CTCLoss(blank=0, zero_infinity=True)
 
         # Beam decoding with Flashlight
         self.enable_beam_decode = False
@@ -349,7 +392,7 @@ class ASR(BaseASR):
             f'LM weight {self.args.decode.lm_weight}, '
             f'Word score {self.args.decode.word_score}')
 
-    def forward(self, wave, wave_len):
+    def forward(self, wave, wave_len, text, text_len):
         '''
             Forward function to compute logits.
             Input:
@@ -366,12 +409,12 @@ class ASR(BaseASR):
         feat, feat_len = self.extract_features(wave, wave_len)
 
         # Encode features
-        enc, enc_len = self.Listen(feat, feat_len)
+        loss = batch_iterator(feat, text, self.Listen, self.AttendAndSpell, self.optimizers())
 
         # Project hidden features to vocabularies
-        logits = self.ANS(enc)
+        
 
-        return logits, enc_len, feat, feat_len
+        return loss
 
     def training_step(self, batch, batch_idx):
         ''' Processes in a single training loop. '''
@@ -381,8 +424,7 @@ class ASR(BaseASR):
         wave_len, text_len = batch['wave_len'], batch['text_len']
 
         # Compute logits
-        loss = batch_iterator(wave, text, self.Listen, self.ANS, self.optimizers())
-        # logits, enc_len, feat, feat_len = self(wave, wave_len)
+        loss = self(wave, wave_len, text, text_len)
 
         # Compute loss
         # loss = self.cal_loss(logits, enc_len, feat, feat_len, text, text_len)
@@ -391,19 +433,7 @@ class ASR(BaseASR):
         self.log('train_loss', loss)
 
         return loss
-    def cal_loss(self, logits, enc_len, feat, feat_len, text, text_len):
-        ''' Computes CTC loss. '''
 
-        log_probs = torch.log_softmax(logits, dim=2)
-
-        # Compute loss
-        with torch.backends.cudnn.flags(deterministic=True):
-            # for reproducibility
-            ctc_loss = self.ctc_loss(
-                log_probs.transpose(0, 1),
-                text, enc_len, text_len)
-
-        return ctc_loss
 
     def decode(self, logits, enc_len, decode_type=None):
         ''' Decoding. '''

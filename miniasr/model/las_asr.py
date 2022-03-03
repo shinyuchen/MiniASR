@@ -33,20 +33,7 @@ from torch.distributions.categorical import Categorical
 import editdistance as ed
 import numpy as np
 
-def LetterErrorRate(pred_y,true_y):
-    ed_accumalate = []
-    for p,t in zip(pred_y,true_y):
-        compressed_t = [w for w in t if (w!=1 and w!=0)]
-        
-        compressed_p = []
-        for p_w in p:
-            if p_w == 0:
-                continue
-            if p_w == 1:
-                break
-            compressed_p.append(p_w)
-        ed_accumalate.append(ed.eval(compressed_p,compressed_t)/len(compressed_t))
-    return ed_accumalate
+
 
 # BLSTM layer for pBLSTM
 # Step 1. Reduce time resolution to half
@@ -317,7 +304,7 @@ def batch_iterator(batch_data, batch_label, listener, speller, optimizer, tf_rat
     #     optimizer.step()
 
     batch_loss = loss
-    print(f'listner_feature[0] : {listner_feature[0].size()} \n listner_feature[1] : {listner_feature[1].size()}')
+    # print(f'listner_feature[0] : {listner_feature[0].size()} \n listner_feature[1] : {listner_feature[1].size()}')
 
 
     return batch_loss, pred_y #, batch_ler
@@ -475,7 +462,7 @@ class ASR(BaseASR):
             # Compute logits
             loss, logits, feat_len = self(wave, wave_len, text, text_len)
             enc_len = [np.floor(i.cpu()/8) for i in feat_len]
-            print(enc_len)
+            # print(enc_len)
             # Decode (hypotheses)
             # hyps = []
             # for p in torch.max(logits.permute(0,2,1),dim=2)[1].cpu().numpy():     
@@ -493,7 +480,7 @@ class ASR(BaseASR):
             # Recover reference text
             refs = [self.tokenizer.decode(text[i].cpu().tolist())
                     for i in range(len(text))]
-            print(f'refs: {refs}')
+            # print(f'refs: {refs}')
         return list(zip(refs, hyps)), loss.cpu().item()
     def greedy_decode(self, logits, enc_len):
         ''' CTC greedy decoding. '''

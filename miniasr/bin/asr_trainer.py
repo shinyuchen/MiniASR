@@ -41,7 +41,7 @@ def create_asr_trainer(args, device):
         # Create pytorch-lightning trainer
         trainer = pl.Trainer(
             accumulate_grad_batches=args.hparam.accum_grad,
-            gradient_clip_val=args.hparam.grad_clip,
+#             gradient_clip_val=args.hparam.grad_clip,
             callbacks=[checkpoint_callback],
             **args.trainer
         )
@@ -70,7 +70,7 @@ def create_asr_trainer(args, device):
         trainer = pl.Trainer(
             resume_from_checkpoint=args.ckpt,
             accumulate_grad_batches=args.hparam.accum_grad,
-            gradient_clip_val=args.hparam.grad_clip,
+#             gradient_clip_val=args.hparam.grad_clip,
             callbacks=[checkpoint_callback],
             **args.trainer)
 

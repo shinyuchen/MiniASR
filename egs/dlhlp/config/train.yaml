@@ -6,11 +6,11 @@ data:
   text:
     mode: character
     vocab: data/libri_train_1h/vocab_char.txt
-
+accum_steps : 8
 fs_step: 500
 ss_step: 10000
 ts_step: 20000
-
+enable_sch: False
 model:
   name: las_asr
   extractor:
@@ -26,20 +26,20 @@ model:
   optim:
     algo: Adam
     kwargs:
-      lr: 0.0001
-  specaugment:
-    freq_mask_range: [0, 27]
-    freq_mask_num: 2
-    time_mask_range: [0, 100]
-    time_mask_num: 2
-    time_mask_max: 1.0
-    time_warp_w: 80
+      lr: 0.001
+#   specaugment:
+#     freq_mask_range: [0, 27]
+#     freq_mask_num: 2
+#     time_mask_range: [0, 100]
+#     time_mask_num: 2
+#     time_mask_max: 1.0
+#     time_warp_w: 80
 
 hparam:
-  train_batch_size: 1
+  train_batch_size: 6
   val_batch_size: 5
   accum_grad: 1
-  grad_clip: 5000
+#   grad_clip: 5000
   njobs: 4
   pin_memory: true
 
@@ -50,10 +50,10 @@ checkpoint_callbacks:
 
 trainer:
   max_epochs: 500
-  max_steps: 80000
-  check_val_every_n_epoch: 5
+  max_steps: 8000
+  check_val_every_n_epoch: 1
   gpus: 1
-  precision: 32
+  precision: 16
   logger: true
   log_every_n_steps: 5
   flush_logs_every_n_steps: 5

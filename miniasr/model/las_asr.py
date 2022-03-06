@@ -34,6 +34,20 @@ import editdistance as ed
 import numpy as np
 
 
+def LetterErrorRate(pred_y,true_y):
+    ed_accumalate = []
+    for p,t in zip(pred_y,true_y):
+        compressed_t = [w for w in t if (w!=1 and w!=0)]
+        
+        compressed_p = []
+        for p_w in p:
+            if p_w == 0:
+                continue
+            if p_w == 1:
+                break
+            compressed_p.append(p_w)
+        ed_accumalate.append(ed.eval(compressed_p,compressed_t)/len(compressed_t))
+    return ed_accumalate
 
 # BLSTM layer for pBLSTM
 # Step 1. Reduce time resolution to half
@@ -91,7 +105,7 @@ class Listener(nn.Module):
 class Speller(nn.Module):
     def __init__(self, output_class_dim=31,  speller_hidden_dim=512, rnn_unit="LSTM", speller_rnn_layer=1, use_gpu=True, max_label_len=1700,
                  use_mlp_in_attention=True, mlp_dim_in_attention=128, mlp_activate_in_attention='relu', listener_hidden_dim=256,
-                 multi_head=4, decode_mode=1, **kwargs):
+                 multi_head=2, decode_mode=0, **kwargs):
         super(Speller, self).__init__()
         self.rnn_unit = getattr(nn,rnn_unit.upper())
         self.max_label_len = max_label_len
@@ -285,8 +299,9 @@ def batch_iterator(batch_data, batch_label, listener, speller, optimizer, tf_rat
 
     if label_smoothing == 0.0 or not(is_training):
         pred_y = pred_y.permute(0,2,1)#pred_y.contiguous().view(-1,output_class_dim)
-        true_y = torch.max(batch_label,dim=2)[1][:,:max_label_len].contiguous()#.view(-1)
 
+        true_y = CreateOnehotVariable(batch_label[:,:max_label_len], 31).contiguous()
+        true_y = torch.max(true_y,dim=2)[1][:,:max_label_len].contiguous().cuda()
         loss = criterion(pred_y,true_y)
         # variable -> numpy before sending into LER calculator
         # batch_ler = LetterErrorRate(torch.max(pred_y.permute(0,2,1),dim=2)[1].cpu().numpy(),#.reshape(current_batch_size,max_label_len),
@@ -296,8 +311,8 @@ def batch_iterator(batch_data, batch_label, listener, speller, optimizer, tf_rat
         true_y = CreateOnehotVariable(batch_label[:,:max_label_len], 31).contiguous()
         true_y = true_y.type(torch.cuda.FloatTensor) if use_gpu else true_y.type(torch.FloatTensor)
         loss = label_smoothing_loss(pred_y,true_y,label_smoothing=label_smoothing)
-        # batch_ler = LetterErrorRate(torch.max(pred_y,dim=2)[1].cpu().numpy(),#.reshape(current_batch_size,max_label_len),
-        #                             torch.max(true_y,dim=2)[1].cpu().data.numpy(),data) #.reshape(current_batch_size,max_label_len), data)
+        batch_ler = LetterErrorRate(torch.max(pred_y,dim=2)[1].cpu().numpy(),#.reshape(current_batch_size,max_label_len),
+                                    torch.max(true_y,dim=2)[1].cpu().data.numpy()) #.reshape(current_batch_size,max_label_len), data)
 
     # if is_training:
     #     loss.backward()
@@ -307,7 +322,7 @@ def batch_iterator(batch_data, batch_label, listener, speller, optimizer, tf_rat
     # print(f'listner_feature[0] : {listner_feature[0].size()} \n listner_feature[1] : {listner_feature[1].size()}')
 
 
-    return batch_loss, pred_y #, batch_ler
+    return batch_loss, pred_y.permute(0,2,1) #, batch_ler
 '''
     File      [ ctc_asr.py ]
     Author    [ Heng-Jui Chang (NTUEE) ]
@@ -330,7 +345,7 @@ class ASR(BaseASR):
 
     def __init__(self, tokenizer, args):
         super().__init__(tokenizer, args)
-
+        self.automatic_optimization = False
         # Main model setup
         self.Listen = Listener()
 
@@ -400,7 +415,7 @@ class ASR(BaseASR):
             f'LM weight {self.args.decode.lm_weight}, '
             f'Word score {self.args.decode.word_score}')
 
-    def forward(self, wave, wave_len, text, text_len):
+    def forward(self, wave, wave_len, text, text_len, is_training):
         '''
             Forward function to compute logits.
             Input:
@@ -417,7 +432,8 @@ class ASR(BaseASR):
         feat, feat_len = self.extract_features(wave, wave_len)
 
         # Encode features
-        loss, pred = batch_iterator(feat, text, self.Listen, self.AttendAndSpell, self.optimizers())
+        tf_rate = 0.9 - (0.5)*(self.trainer.global_step/20000)
+        loss, pred = batch_iterator(feat, text, self.Listen, self.AttendAndSpell, self.optimizers(),tf_rate=tf_rate, is_training=is_training)
 
         # Project hidden features to vocabularies
         
@@ -430,10 +446,18 @@ class ASR(BaseASR):
         # Get inputs from batch
         wave, text = batch['wave'], batch['text']
         wave_len, text_len = batch['wave_len'], batch['text_len']
-
+        opt = self.optimizers()
         # Compute logits
-        loss, _, _2= self(wave, wave_len, text, text_len)
-
+        loss, _, _2= self(wave, wave_len, text, text_len, is_training=True)
+        loss /= self.args.accum_steps
+        self.manual_backward(loss, opt)
+        if(self.trainer.global_step % self.args.accum_steps == 0):
+            opt.step()
+            opt.zero_grad()
+        with open('../../../monitor.txt', 'a') as f:
+            f.write(f'Step : {self.trainer.global_step} \n \
+                    Learning rate : {self.optimizers().param_groups[0]["lr"]} \n \
+                    Train loss: {loss.item()} \n')
         # Compute loss
         # loss = self.cal_loss(logits, enc_len, feat, feat_len, text, text_len)
 
@@ -460,7 +484,7 @@ class ASR(BaseASR):
 
         with torch.no_grad():
             # Compute logits
-            loss, logits, feat_len = self(wave, wave_len, text, text_len)
+            loss, logits, feat_len = self(wave, wave_len, text, text_len, is_training=False)
             enc_len = [np.floor(i.cpu()/8) for i in feat_len]
             # print(enc_len)
             # Decode (hypotheses)
@@ -478,14 +502,22 @@ class ASR(BaseASR):
               # hyps.append(compressed_p)
               # print(f'hyps : {hyps}')
             # Recover reference text
+            with open(f'../../../hyps_{self.trainer.global_step}.txt', 'w') as f:
+                for i in hyps:
+                    f.write(f'{i} \n')
+                f.close()
             refs = [self.tokenizer.decode(text[i].cpu().tolist())
                     for i in range(len(text))]
             # print(f'refs: {refs}')
+            with open(f'../../../refs_{self.trainer.global_step}.txt', 'w') as f:
+                for i in refs:
+                    f.write(f'{i} \n')
+                f.close()
         return list(zip(refs, hyps)), loss.cpu().item()
     def greedy_decode(self, logits, enc_len):
         ''' CTC greedy decoding. '''
         hyps = torch.argmax(logits, dim=2).cpu().tolist()  # Batch x Time 
-        result = [self.tokenizer.decode(h[:int(enc_len[i].item())], ignore_repeat=True)
+        result = [self.tokenizer.decode(h[:int(enc_len[i].item())], ignore_repeat=False)
                 for i, h in enumerate(hyps)]
         return result
 

@@ -92,21 +92,25 @@ class BaseASR(pl.LightningModule):
         using_lbfgs=False,
     ):
         # update generator every step
+
         optimizer.step(closure=optimizer_closure)
 
     # manually warm up lr without a scheduler
-        if (self.trainer.global_step <= self.args.fs_step):
-          for param_group in optimizer.param_groups:
-            param_group['lr'] = 1e-3 * self.trainer.global_step / self.args.fs_step
-        elif (self.trainer.global_step <= self.args.ss_step):
-          for param_group in optimizer.param_groups:
-            param_group['lr'] = 1e-3 
-        elif (self.trainer.global_step <= self.args.ts_step):
-          for param_group in optimizer.param_groups:
-            param_group['lr'] = 1e-3 * (self.gamma ** (self.trainer.global_step - self.args.fs_step))
+        if(self.args.enable_sch == True):
+            if (self.trainer.global_step <= self.args.fs_step):
+              for param_group in optimizer.param_groups:
+                param_group['lr'] = 1e-3 * self.trainer.global_step / self.args.fs_step
+            elif (self.trainer.global_step <= self.args.ss_step):
+              for param_group in optimizer.param_groups:
+                param_group['lr'] = 1e-3 
+            elif (self.trainer.global_step <= self.args.ts_step):
+              for param_group in optimizer.param_groups:
+                param_group['lr'] = 1e-3 * (self.gamma ** (self.trainer.global_step - self.args.fs_step))
+            else:
+              for param_group in optimizer.param_groups:
+                param_group['lr'] = 1e-5
         else:
-          for param_group in optimizer.param_groups:
-            param_group['lr'] = 1e-5
+            pass
 
     def cal_feat_len(self, x_len: torch.Tensor):
         ''' Calculates feature lengths. '''
@@ -137,6 +141,7 @@ class BaseASR(pl.LightningModule):
 
         # Get features
         feat = self.feat_select(emb_dict)
+#         print(f'feat size: {feat.size()}')
         feat_len = self.cal_feat_len(wave_len)
 
         # Data augmentation
@@ -245,12 +250,15 @@ class BaseASR(pl.LightningModule):
         val_wer = word_res['distance'] / word_res['length']
         self.log('val_cer', val_cer)
         self.log('val_wer', val_wer)
-
+        
         # Save averaged loss to
         val_loss = total_loss / total_samples
         self.log('val_loss', val_loss)
 
         print()
+        with open('../../../Val_record.txt', 'a') as f:
+            f.write('Val CER = {:.1f}% , WER = {:.1f}% , Loss = {:.2f}'
+                     .format(val_cer * 100, val_wer * 100, val_loss))
         logging.info('Val CER = {:.1f}% , WER = {:.1f}% , Loss = {:.2f}'
                      .format(val_cer * 100, val_wer * 100, val_loss))
 
@@ -329,9 +337,9 @@ class BaseASR(pl.LightningModule):
         self.time_count = 0
 
         # Write results to file
-        with open(join(self.args.test_res, 'refs.txt'), 'w') as fp:
+        with open(join(self.args.test_res, 'refs.txt'), 'a') as fp:
             fp.write('\n'.join(all_refs))
-        with open(join(self.args.test_res, 'hyps.txt'), 'w') as fp:
+        with open(join(self.args.test_res, 'hyps.txt'), 'a') as fp:
             fp.write('\n'.join(all_hyps))
 
     def recognize(self, wave):
